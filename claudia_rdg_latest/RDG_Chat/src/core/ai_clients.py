@@ -1,5 +1,10 @@
 """
 Azure AI clients for GCC: Azure OpenAI + Azure AI Search
+
+DEPRECATED: This module is not used by the active multi-agent orchestrator.
+The active search pipeline uses src/agents/plugins/itsm_search_plugin.py
+with Azure Vision embeddings (VISION_embedding field in itsm-indexv2).
+This file is retained for reference only.
 """
 
 import logging

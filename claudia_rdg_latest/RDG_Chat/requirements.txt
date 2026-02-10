@@ -6,9 +6,8 @@ openai==1.109.1
 semantic-kernel==1.39.3
 azure-cosmos>=4.7.0
 
-# Embedding models for multi-vector search
-sentence-transformers>=2.2.0
-torch>=1.13.0
+# Azure Vision embeddings are called via REST (requests library below)
+# No local embedding models needed — saves ~2GB in container image
 
 # HTTP & API
 httpx==0.26.0

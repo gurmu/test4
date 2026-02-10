@@ -26,6 +26,10 @@ class AgentConfig:
     kb_top_k: int
     kb_content_field: str
     kb_semantic_config: str
+
+    # Azure Computer Vision (vectorizeText / vectorizeImage) - REQUIRED
+    azure_vision_endpoint: str
+    azure_vision_key: str
     
     # Backend API Service URLs (FastAPI services) - REQUIRED
     ivanti_api_url: str
@@ -64,7 +68,11 @@ class AgentConfig:
         self.kb_top_k = int(os.getenv("KB_TOP_K", "5"))
         self.kb_content_field = os.getenv("KB_CONTENT_FIELD", "content")
         self.kb_semantic_config = os.getenv("KB_SEMANTIC_CONFIG", "")
-        
+
+        # Azure Computer Vision (multimodal embeddings)
+        self.azure_vision_endpoint = os.getenv("AZURE_VISION_ENDPOINT", "")
+        self.azure_vision_key = os.getenv("AZURE_VISION_KEY", "")
+
         # Backend API URLs (FastAPI services)
         self.ivanti_api_url = os.getenv("IVANTI_API_URL", "http://ivanti-api:8000")
         self.nice_api_url = os.getenv("NICE_API_URL", "http://nice-api:8001")
@@ -97,6 +105,8 @@ class AgentConfig:
             ("AZURE_SEARCH_INDEX", self.azure_search_index),
             ("AZURE_SEARCH_KEY", self.azure_search_key),
             ("KB_CONTENT_FIELD", self.kb_content_field),
+            ("AZURE_VISION_ENDPOINT", self.azure_vision_endpoint),
+            ("AZURE_VISION_KEY", self.azure_vision_key),
             ("COSMOSDB_ENDPOINT", self.cosmos_endpoint),
             ("COSMOSDB_KEY", self.cosmos_key),
         ]
@@ -126,6 +136,7 @@ class AgentConfig:
   KB Top K: {self.kb_top_k}
   KB Content Field: {self.kb_content_field}
   KB Semantic Config: {self.kb_semantic_config}
+  Vision Endpoint: {self.azure_vision_endpoint[:50]}...
   Ivanti API: {self.ivanti_api_url}
   NICE API: {self.nice_api_url}
   Cosmos Endpoint: {self.cosmos_endpoint[:50]}...

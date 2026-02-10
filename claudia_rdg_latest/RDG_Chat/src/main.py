@@ -52,11 +52,19 @@ def main():
         ticket = build_ticket(args)
         result = asyncio.run(orchestrator.run_ticket_triage(ticket, args.conversation_id))
 
+        # ---- Human-readable output (what Teams users see) ----
         print("\n" + "=" * 70)
-        print("COMPREHENSIVE TRIAGE RESULT")
+        print("💬  TEAMS BOT RESPONSE (what the user sees)")
         print("=" * 70)
+        print(result.user_message or result.orchestrator_summary or "(no response)")
+        print("=" * 70)
+
+        # ---- Full debug triage payload ----
+        print("\n" + "-" * 70)
+        print("🔍  FULL TRIAGE RESULT (debug)")
+        print("-" * 70)
         print(json.dumps(asdict(result), indent=2))
-        print("=" * 70 + "\n")
+        print("-" * 70 + "\n")
 
         sys.exit(0)
 

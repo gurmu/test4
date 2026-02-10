@@ -63,11 +63,13 @@ _conversation_states: dict[str, ConversationState] = {}
 # Verbatim ask-user prompt (Invariant #2)
 # ---------------------------------------------------------------------------
 ASK_USER_PROMPT = (
-    "I couldn't find an exact match in the ITSM Knowledge Base.\n"
-    "Would you like me to:\n"
-    "1) Create an incident (tracks the issue and assigns it to a team), or\n"
-    "2) Create a callback request (support calls you back)?\n"
-    "Reply with 1 or 2."
+    "I wasn't able to find a direct answer for this one in our knowledge base — "
+    "but no worries, I can still get you help! 😊\n\n"
+    "What would work best for you?\n\n"
+    "**1)** Create an incident — this logs your issue, assigns it to the right team, "
+    "and you'll get updates as it's worked on.\n\n"
+    "**2)** Request a callback — a support specialist will call you back directly.\n\n"
+    "Just reply **1** or **2** and I'll take care of it!"
 )
 
 
@@ -168,6 +170,8 @@ class MultiAgentOrchestrator:
             index_name=self.config.azure_search_index,
             api_key=self.config.azure_search_key,
             content_field=self.config.kb_content_field,
+            vision_endpoint=self.config.azure_vision_endpoint,
+            vision_key=self.config.azure_vision_key,
         )
 
         # Build all 4 agents
@@ -194,11 +198,20 @@ class MultiAgentOrchestrator:
     # ------------------------------------------------------------------
     # Pre-search KB (structured JSON, no score gating)
     # ------------------------------------------------------------------
-    def _pre_search_kb(self, query: str) -> dict:
+    def _pre_search_kb(self, query: str, image_bytes: bytes | None = None) -> dict:
         """
         Run ITSM search BEFORE agentic flow.
+
+        If image_bytes is provided (user attached an image in Teams),
+        it is injected into the search plugin for Azure Vision vectorizeImage.
+
         Returns parsed dict: {"kb_hits_count": int, "results": [...]}
         """
+        # Inject image bytes for vision embedding (consumed during search)
+        if image_bytes:
+            self._itsm_search._pending_image_bytes = image_bytes
+            logger.info(f"Image bytes injected for vision search: {len(image_bytes)} bytes")
+
         try:
             raw_json = self._itsm_search.search_kb(
                 query=query,
@@ -250,6 +263,8 @@ class MultiAgentOrchestrator:
                 lines.append(f"  Content: {r.get('content', '')[:1500]}")
                 if r.get("image_url"):
                     lines.append(f"  Image: {r['image_url']}")
+                if r.get("pdf_url"):
+                    lines.append(f"  PDF: {r['pdf_url']}")
 
         lines.append("--- END KB SEARCH RESULTS ---")
         return "\n".join(lines)
@@ -263,6 +278,18 @@ class MultiAgentOrchestrator:
         instructions = (
             "You are the Orchestrator for an ITSM multi-agent system.\n"
             "You coordinate other agents and make ALL routing decisions using reasoning.\n\n"
+
+            "## TONE & STYLE (for the 'summary' field)\n"
+            "The 'summary' field is displayed directly to real employees in Microsoft Teams.\n"
+            "Write it as a friendly, helpful IT support colleague — NOT a technical manual.\n"
+            "Rules for 'summary':\n"
+            "- Start with a brief empathetic acknowledgment (e.g., 'Hi! I found some steps that should help with your VPN issue.').\n"
+            "- Use short, clear sentences. Avoid jargon where possible.\n"
+            "- When listing steps, use numbered markdown but keep each step concise (one action per step).\n"
+            "- End with an encouraging closing (e.g., 'Let me know if this doesn't resolve it and I'll escalate for you!').\n"
+            "- Do NOT include raw source references like '[Result 1, Result 3]'. Instead, say something natural like 'Based on our IT knowledge base' if needed.\n"
+            "- Keep the total summary under 300 words.\n"
+            "- Use a warm, professional tone — imagine you're a helpful colleague in a Teams chat.\n\n"
 
             "## MANDATORY KB-FIRST WORKFLOW\n"
             "Every user message includes a '--- KB SEARCH RESULTS ---' block.\n"
@@ -364,6 +391,8 @@ class MultiAgentOrchestrator:
                 index_name=self.config.azure_search_index,
                 api_key=self.config.azure_search_key,
                 content_field=self.config.kb_content_field,
+                vision_endpoint=self.config.azure_vision_endpoint,
+                vision_key=self.config.azure_vision_key,
             ),
             plugin_name="itsm",
         )
@@ -493,7 +522,11 @@ class MultiAgentOrchestrator:
         # ---- Track state for Invariant #3 ----
         if parsed.get("final") is True:
             _conversation_states[conversation_id] = ConversationState.RESOLVED
-        elif parsed.get("final") is False and "Reply with 1 or 2" in parsed.get("summary", ""):
+        elif parsed.get("final") is False and (
+            "reply **1** or **2**" in parsed.get("summary", "").lower()
+            or "reply with 1 or 2" in parsed.get("summary", "").lower()
+            or "1)" in parsed.get("summary", "")
+        ):
             _conversation_states[conversation_id] = ConversationState.WAITING_FOR_CHOICE
 
         return parsed
@@ -530,7 +563,11 @@ class MultiAgentOrchestrator:
                 role_str = role.value if hasattr(role, "value") else str(role or "")
                 if "assistant" in role_str.lower():
                     content = msg.content or ""
-                    if "Reply with 1 or 2" in content or "1)" in content:
+                    if (
+                        "reply **1** or **2**" in content.lower()
+                        or "reply with 1 or 2" in content.lower()
+                        or "1)" in content
+                    ):
                         return True
                     break
 
@@ -540,7 +577,8 @@ class MultiAgentOrchestrator:
     # Ticket triage (structured / CLI entry point)
     # ------------------------------------------------------------------
     async def run_ticket_triage(
-        self, ticket: TicketRequest, conversation_id: str
+        self, ticket: TicketRequest, conversation_id: str,
+        image_bytes: bytes | None = None,
     ) -> TriageResult:
         """
         Full KB-first triage using the hybrid approach.
@@ -555,7 +593,7 @@ class MultiAgentOrchestrator:
 
         # ---- Step 1: pre-search KB ----
         query = f"{ticket.subject}. {ticket.description}"
-        kb_data = self._pre_search_kb(query)
+        kb_data = self._pre_search_kb(query, image_bytes=image_bytes)
         kb_context = self._build_kb_context(kb_data)
 
         # ---- Step 2: augmented user message ----
@@ -603,15 +641,23 @@ class MultiAgentOrchestrator:
     # ------------------------------------------------------------------
     # Conversational entry point (Teams bot / chat UI)
     # ------------------------------------------------------------------
-    async def run_conversation(self, user_input: str, conversation_id: str) -> str:
+    async def run_conversation(
+        self, user_input: str, conversation_id: str, image_bytes: bytes | None = None
+    ) -> str:
         """
         General conversational entry point.
 
         - New issues: pre-search KB, inject context, run agentic flow.
         - Follow-ups (user replies 1/2): skip KB search, pass choice directly.
         - Invariants enforced on every response.
+
+        If image_bytes is provided (user attached an image in Teams),
+        it is passed to the KB pre-search for Azure Vision vectorizeImage.
         """
-        logger.info(f"run_conversation: conv={conversation_id}, input={user_input[:80]}...")
+        logger.info(
+            f"run_conversation: conv={conversation_id}, input={user_input[:80]}..."
+            f"{', image=' + str(len(image_bytes)) + ' bytes' if image_bytes else ''}"
+        )
 
         history = self._history_store.load(conversation_id)
         is_followup = self._is_followup_choice(user_input, conversation_id, history)
@@ -623,9 +669,19 @@ class MultiAgentOrchestrator:
             kb_data = {"kb_hits_count": 0, "results": []}  # N/A for follow-ups
         else:
             # New issue: pre-search KB and inject context
-            kb_data = self._pre_search_kb(user_input)
+            kb_data = self._pre_search_kb(user_input, image_bytes=image_bytes)
             kb_context = self._build_kb_context(kb_data)
-            augmented = user_input + kb_context
+
+            # Let the LLM know an image was attached for search context
+            if image_bytes:
+                augmented = (
+                    user_input
+                    + "\n[User attached an image that has been embedded for visual search]"
+                    + kb_context
+                )
+            else:
+                augmented = user_input + kb_context
+
             history.add_user_message(augmented)
 
         # Run AgentGroupChat
